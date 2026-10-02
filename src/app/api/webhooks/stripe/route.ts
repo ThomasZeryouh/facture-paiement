@@ -1,6 +1,6 @@
 import type Stripe from "stripe";
-import { prisma } from "@/lib/prisma";
 import { stripe } from "@/lib/stripe";
+import { syncCheckoutSession } from "@/lib/payments";
 import { PaymentStatus } from "@/generated/prisma/client";
 
 export async function POST(request: Request) {
@@ -18,41 +18,20 @@ export async function POST(request: Request) {
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Invalid payload";
+    console.error(`[stripe webhook] ${message}`);
     return new Response(`Webhook error: ${message}`, { status: 400 });
   }
 
   switch (event.type) {
     case "checkout.session.completed":
-    case "checkout.session.async_payment_succeeded": {
-      const session = event.data.object;
-      // Les moyens de paiement asynchrones (SEPA…) arrivent "unpaid" au completed
-      if (session.payment_status === "paid") {
-        await updatePayment(session, PaymentStatus.PAID);
-      }
-      break;
-    }
-    case "checkout.session.async_payment_failed":
-      await updatePayment(event.data.object, PaymentStatus.FAILED);
-      break;
+    case "checkout.session.async_payment_succeeded":
     case "checkout.session.expired":
-      await updatePayment(event.data.object, PaymentStatus.EXPIRED);
+      await syncCheckoutSession(event.data.object);
+      break;
+    case "checkout.session.async_payment_failed":
+      await syncCheckoutSession(event.data.object, PaymentStatus.FAILED);
       break;
   }
 
   return Response.json({ received: true });
-}
-
-async function updatePayment(
-  session: Stripe.Checkout.Session,
-  status: PaymentStatus,
-) {
-  const paymentIntentId =
-    typeof session.payment_intent === "string"
-      ? session.payment_intent
-      : session.payment_intent?.id;
-
-  await prisma.payment.updateMany({
-    where: { stripeSessionId: session.id },
-    data: { status, stripePaymentIntentId: paymentIntentId ?? undefined },
-  });
 }

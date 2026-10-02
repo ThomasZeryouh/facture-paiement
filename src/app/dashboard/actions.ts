@@ -1,21 +1,19 @@
 "use server";
 
-import { redirect } from "next/navigation";
-import { z } from "zod";
+import { notFound, redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { stripe } from "@/lib/stripe";
 
-const checkoutSchema = z.object({
-  amount: z.coerce.number().min(1).max(10_000),
-});
-
-export async function createCheckoutSession(formData: FormData) {
+export async function createCheckoutSession(productId: string) {
   const session = await auth();
-  if (!session?.user?.id) redirect("/api/auth/signin");
+  if (!session?.user?.id) redirect("/login");
 
-  const { amount } = checkoutSchema.parse({ amount: formData.get("amount") });
-  const amountInCents = Math.round(amount * 100);
+  // Le prix vient toujours de la base, jamais du client
+  const product = await prisma.product.findUnique({
+    where: { id: productId, active: true },
+  });
+  if (!product) notFound();
 
   const user = await prisma.user.findUniqueOrThrow({
     where: { id: session.user.id },
@@ -44,23 +42,27 @@ export async function createCheckoutSession(formData: FormData) {
       {
         quantity: 1,
         price_data: {
-          currency: "eur",
-          unit_amount: amountInCents,
-          product_data: { name: "Paiement Flux" },
+          currency: product.currency,
+          unit_amount: product.price,
+          product_data: {
+            name: product.name,
+            description: product.description,
+          },
         },
       },
     ],
-    metadata: { userId: user.id },
+    metadata: { userId: user.id, productId: product.id },
     success_url: `${appUrl}/dashboard/success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${appUrl}/dashboard`,
+    cancel_url: `${appUrl}/dashboard/products/${product.slug}`,
   });
 
   await prisma.payment.create({
     data: {
       userId: user.id,
+      productId: product.id,
       stripeSessionId: checkout.id,
-      amount: amountInCents,
-      currency: "eur",
+      amount: product.price,
+      currency: product.currency,
     },
   });
 
